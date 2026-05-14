@@ -73,6 +73,34 @@ class PendingOrderWorker:
         self._last_position_sync_ts = 0.0
         logger.info(f"PendingOrderWorker: sync_enabled={self._position_sync_enabled}, interval={self._position_sync_interval_sec}s")
 
+    @staticmethod
+    def _okx_position_contracts_to_base(client: OkxClient, inst_id: str, pos: Dict[str, Any]) -> float:
+        """Convert OKX swap position contracts to the system's base-asset quantity."""
+        try:
+            pos_qty = abs(float(pos.get("pos") or 0.0))
+        except Exception:
+            pos_qty = 0.0
+        if pos_qty <= 0:
+            return 0.0
+
+        try:
+            ct_val = float(pos.get("ctVal") or 0.0)
+        except Exception:
+            ct_val = 0.0
+
+        if ct_val <= 0:
+            try:
+                inst = client.get_instrument(inst_type="SWAP", inst_id=inst_id) or {}
+                ct_val = float(inst.get("ctVal") or 0.0)
+            except Exception:
+                ct_val = 0.0
+
+        if ct_val > 0:
+            return pos_qty * ct_val
+
+        logger.warning(f"OKX swap position ctVal unavailable; falling back to raw contract size: inst_id={inst_id}")
+        return pos_qty
+
     def start(self) -> bool:
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -1458,14 +1486,7 @@ class PendingOrderWorker:
                         pos_ps = str(pos.get("posSide") or "").strip().lower()
                         # Match instrument and position side
                         if pos_inst == inst_id and pos_ps == pos_side:
-                            # OKX pos field is signed for net mode; use abs for simplicity
-                            pos_qty = abs(float(pos.get("pos") or 0.0))
-                            # Convert contracts to base amount using ctVal
-                            ct_val = float(pos.get("ctVal") or 0.0)
-                            if ct_val > 0:
-                                actual_pos_size = pos_qty * ct_val
-                            else:
-                                actual_pos_size = pos_qty
+                            actual_pos_size = self._okx_position_contracts_to_base(client, inst_id, pos)
                             break
                 elif isinstance(client, BinanceFuturesClient):
                     pos_resp = client.get_positions() or []
@@ -2828,5 +2849,4 @@ class PendingOrderWorker:
             )
             db.commit()
             cur.close()
-
 

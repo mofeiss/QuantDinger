@@ -87,20 +87,29 @@ class CryptoDataSource(BaseDataSource):
         处理各种输入格式：
         - BTC/USDT -> BTC/USDT
         - BTCUSDT -> BTC/USDT
-        - BTC/USDT:USDT -> BTC/USDT
+        - BTC/USDT:USDT -> BTC/USDT:USDT (perpetual/swap contract)
+        - BTC-USDT-SWAP -> BTC/USDT:USDT (OKX instrument id)
         - BTC -> BTC/USDT (默认)
         - PI, TRX -> PI/USDT, TRX/USDT
         """
         if not symbol:
             return '', ''
         
-        sym = symbol.strip()
-        
-        # 移除 swap/futures 后缀
-        if ':' in sym:
-            sym = sym.split(':', 1)[0]
-        
-        sym = sym.upper()
+        sym = symbol.strip().upper()
+
+        # OKX native instrument ids are often pasted/copied as BASE-QUOTE-SWAP.
+        # Convert them to CCXT's unified perpetual format BASE/QUOTE:SETTLE.
+        if '/' not in sym and '-' in sym:
+            hyphen_parts = [p.strip() for p in sym.split('-') if p.strip()]
+            if len(hyphen_parts) >= 3 and hyphen_parts[-1] in ('SWAP', 'PERP', 'PERPETUAL'):
+                base = hyphen_parts[0]
+                quote = hyphen_parts[1]
+                if base and quote:
+                    return f"{base}/{quote}:{quote}", base
+            if len(hyphen_parts) == 2 and hyphen_parts[1] in self.COMMON_QUOTES:
+                base, quote = hyphen_parts
+                if base and quote:
+                    return f"{base}/{quote}", base
         
         # 如果已经有分隔符，直接解析
         if '/' in sym:
@@ -138,11 +147,30 @@ class CryptoDataSource(BaseDataSource):
         if not markets:
             return None
         
-        # 按优先级尝试不同的报价货币
+        # 按优先级尝试不同的报价货币，同时兼容 CCXT 的永续合约格式
+        # BASE/QUOTE:SETTLE。OKX 的新币（例如 USELESS-USDT-SWAP）可能只有
+        # swap 市场，没有 spot 市场；这时 BASE/USDT 会失败，但 BASE/USDT:USDT
+        # 是有效 symbol。
+        def add_candidate(out: List[str], candidate: str) -> None:
+            if candidate and candidate not in out:
+                out.append(candidate)
+
         quotes_to_try = [preferred_quote] + [q for q in self.COMMON_QUOTES if q != preferred_quote]
-        
+        candidates: List[str] = []
         for quote in quotes_to_try:
-            candidate = f"{base}/{quote}"
+            q = str(quote or '').strip().upper()
+            if not q:
+                continue
+            add_candidate(candidates, f"{base}/{q}")
+            if ':' in q:
+                plain_quote, settle = q.split(':', 1)
+                if plain_quote and settle:
+                    add_candidate(candidates, f"{base}/{plain_quote}:{settle}")
+                    add_candidate(candidates, f"{base}/{plain_quote}")
+            elif q in ('USDT', 'USD', 'USDC'):
+                add_candidate(candidates, f"{base}/{q}:{q}")
+
+        for candidate in candidates:
             if candidate in markets:
                 market = markets[candidate]
                 # 检查市场是否活跃
@@ -191,7 +219,7 @@ class CryptoDataSource(BaseDataSource):
         Get latest ticker for a crypto symbol via CCXT.
 
         Accepts common formats:
-        - BTC/USDT, BTCUSDT, BTC/USDT:USDT
+        - BTC/USDT, BTCUSDT, BTC/USDT:USDT, BTC-USDT-SWAP
         - PI, TRX (will be normalized and searched across exchanges)
         - 自动适配不同交易所的符号格式要求
         """
@@ -529,4 +557,3 @@ class CryptoDataSource(BaseDataSource):
         except Exception as e:
             logger.error(f"CCXT fallback method also failed: {str(e)}")
             return []
-

@@ -2,6 +2,28 @@
 数据源配置
 """
 import os
+from pathlib import Path
+
+
+_DOTENV_LOADED = False
+
+
+def _ensure_dotenv_loaded():
+    """Load backend .env for direct imports outside run.py/gunicorn."""
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    _DOTENV_LOADED = True
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+
+    backend_dir = Path(__file__).resolve().parents[2]
+    root_dir = backend_dir.parent
+    # Keep OS / Compose environment variables higher priority.
+    load_dotenv(root_dir / ".env", override=False)
+    load_dotenv(backend_dir / ".env", override=False)
 
 class MetaDataSourceConfig(type):
     @property
@@ -102,12 +124,14 @@ class YFinanceConfig(metaclass=MetaYFinanceConfig):
 class MetaCCXTConfig(type):
     @property
     def DEFAULT_EXCHANGE(cls):
+        _ensure_dotenv_loaded()
         from app.utils.config_loader import load_addon_config
         val = load_addon_config().get('ccxt', {}).get('default_exchange')
         return val if val else os.getenv('CCXT_DEFAULT_EXCHANGE', 'binance')
 
     @property
     def TIMEOUT(cls):
+        _ensure_dotenv_loaded()
         from app.utils.config_loader import load_addon_config
         val = load_addon_config().get('ccxt', {}).get('timeout')
         return int(val) if val is not None else int(os.getenv('CCXT_TIMEOUT', 10000))
@@ -132,6 +156,7 @@ class MetaCCXTConfig(type):
 
     @property
     def PROXY(cls):
+        _ensure_dotenv_loaded()
         # 1) Local proxy helpers from backend_api_python/.env
         # PROXY_URL has the highest priority if provided.
         proxy_url = (os.getenv('PROXY_URL') or '').strip()

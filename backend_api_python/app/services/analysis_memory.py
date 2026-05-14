@@ -171,6 +171,40 @@ class AnalysisMemory:
                 logger.debug("Analysis memory table ensured successfully")
         except Exception as e:
             logger.warning(f"Memory table creation/update skipped: {e}")
+
+    def _mark_stale_processing_failed(self, stale_minutes: int = 15) -> int:
+        """Fail processing rows that outlived their background worker.
+
+        Async analysis runs in a daemon thread. If the worker process restarts or
+        exits while the thread is running, the history row can otherwise stay
+        stuck in "processing" forever.
+        """
+        try:
+            minutes = max(1, int(stale_minutes or 15))
+        except Exception:
+            minutes = 15
+
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute("""
+                    UPDATE qd_analysis_memory
+                    SET task_status = 'failed',
+                        task_error = 'Analysis task timed out or backend restarted before completion',
+                        summary = 'Analysis failed: task timed out or backend restarted before completion',
+                        updated_at = NOW()
+                    WHERE task_status = 'processing'
+                      AND COALESCE(updated_at, created_at) < NOW() - (%s || ' minutes')::interval
+                """, (minutes,))
+                affected = cur.rowcount
+                db.commit()
+                cur.close()
+                if affected:
+                    logger.warning("Marked %s stale analysis task(s) as failed", affected)
+                return int(affected or 0)
+        except Exception as e:
+            logger.warning(f"Failed to mark stale analysis tasks: {e}")
+            return 0
     
     def store(self, analysis_result: Dict[str, Any], user_id: int = None) -> Optional[int]:
         """
@@ -247,6 +281,7 @@ class AnalysisMemory:
             List of historical analyses
         """
         try:
+            self._mark_stale_processing_failed()
             with get_db_connection() as db:
                 cur = db.cursor()
                 days_int = int(days)
@@ -303,6 +338,7 @@ class AnalysisMemory:
             Dict with items list and total count
         """
         try:
+            self._mark_stale_processing_failed()
             offset = (page - 1) * page_size
             
             with get_db_connection() as db:
