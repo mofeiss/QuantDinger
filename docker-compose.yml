@@ -84,6 +84,7 @@ services:
     build:
       context: ./backend_api_python
       dockerfile: Dockerfile
+      network: host
       args:
         BASE_IMAGE: ${IMAGE_PREFIX:-}python:3.12-slim-bookworm
     container_name: quantdinger-backend
@@ -139,6 +140,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      network: host
       args:
         RUNTIME_IMAGE: ${IMAGE_PREFIX:-}nginx:1.25-alpine
     container_name: quantdinger-frontend
@@ -147,9 +149,9 @@ services:
       - "${FRONTEND_PORT:-8888}:80"
     environment:
       # nginx envsubst will inject this into the proxy_pass directive at start.
-      - TZ=Asia/Shanghai
       # Override with the backend's reachable URL when deploying outside compose
       # (e.g. Railway: http://${{Backend.RAILWAY_PRIVATE_DOMAIN}}:5000).
+      - TZ=Asia/Shanghai
       - BACKEND_URL=${BACKEND_URL:-http://backend:5000}
     depends_on:
       - backend

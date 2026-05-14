@@ -5,24 +5,10 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-# Apt: try Aliyun Debian mirror first (typical win in mainland); on failure restore official.
-# No env vars — same Dockerfile works abroad (falls back) and in CN (usually hits mirror).
+# Apt: use official Debian repositories. This server is on a US network; avoid CN mirrors.
 RUN set -eux; \
     APT_TIMEOUT='Acquire::http::Timeout=35'; \
-    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-      cp /etc/apt/sources.list.d/debian.sources /tmp/debian.sources.bak; \
-      sed -i -E \
-        's|https?://deb.debian.org|https://mirrors.aliyun.com|g; s|https?://security.debian.org|https://mirrors.aliyun.com|g' \
-        /etc/apt/sources.list.d/debian.sources; \
-      if ! apt-get -o "$APT_TIMEOUT" -o Acquire::https::Timeout=35 update; then \
-        cp /tmp/debian.sources.bak /etc/apt/sources.list.d/debian.sources; \
-        sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
-        apt-get -o "$APT_TIMEOUT" update; \
-      fi; \
-    else \
-      sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
-      apt-get -o "$APT_TIMEOUT" update; \
-    fi; \
+    apt-get -o "$APT_TIMEOUT" -o Acquire::https::Timeout=35 -o Acquire::ForceIPv4=true update; \
     apt-get install -y --no-install-recommends --fix-missing \
       ca-certificates \
       curl \
@@ -34,12 +20,9 @@ RUN set -eux; \
 
 COPY requirements.txt .
 
-# Pip: try Aliyun PyPI first; on any failure retry default index (PyPI.org).
+# Pip: use the default PyPI index.
 RUN set -eux; \
-    pip install --no-cache-dir --prefer-binary --timeout 180 \
-        -i https://mirrors.aliyun.com/pypi/simple/ \
-        -r requirements.txt \
-      || pip install --no-cache-dir --prefer-binary --timeout 180 -r requirements.txt; \
+    pip install --no-cache-dir --prefer-binary --timeout 180 -r requirements.txt; \
     apt-get purge -y --auto-remove build-essential python3-dev libffi-dev libssl-dev; \
     rm -rf /var/lib/apt/lists/*
 
