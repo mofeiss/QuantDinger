@@ -54,6 +54,7 @@ DB_POOL_MIN = _env_int("DB_POOL_MIN", 5)
 DB_POOL_MAX = _env_int("DB_POOL_MAX", 50)
 DB_POOL_ACQUIRE_TIMEOUT = _env_int("DB_POOL_ACQUIRE_TIMEOUT", 10)
 DB_POOL_HEALTH_CHECK = _env_bool("DB_POOL_HEALTH_CHECK", True)
+DB_TIMEZONE = (os.getenv("DB_TIMEZONE") or os.getenv("TZ") or "Asia/Shanghai").strip() or "Asia/Shanghai"
 
 
 def _get_database_url() -> str:
@@ -136,12 +137,12 @@ def _get_connection_pool():
                 password=params.get('password', ''),
                 dbname=params.get('dbname', 'quantdinger'),
                 connect_timeout=10,
-                # Apply timezone at connection establishment so we don't need
-                # per-checkout SET TIME ZONE (which left connections in an
-                # "idle in transaction" state when no explicit commit/rollback
-                # followed).  keepalives keep dead sockets from lingering in
-                # the pool when the PG side or a NAT drops them.
-                options="-c timezone=UTC",
+                # Apply timezone at connection establishment so NOW() for
+                # TIMESTAMP WITHOUT TIME ZONE columns (strategy runtime logs,
+                # trades, etc.) uses the backend's wall clock.  Keep this in
+                # sync with app.utils.timeutil, which treats naive DB
+                # timestamps as server-local when serializing to the frontend.
+                options=f"-c timezone={DB_TIMEZONE}",
                 keepalives=1,
                 keepalives_idle=30,
                 keepalives_interval=10,
