@@ -52,6 +52,20 @@ def _api_key_hint(api_key: str) -> str:
     return f"{s[:4]}...{s[-4:]}"
 
 
+def _credential_name_from_payload(data: dict) -> str:
+    """Return the user-facing credential name, accepting legacy UI aliases."""
+    if not isinstance(data, dict):
+        return ''
+    for key in ('name', 'account_name', 'accountName'):
+        value = data.get(key)
+        if value is None:
+            continue
+        name = str(value).strip()
+        if name:
+            return name
+    return ''
+
+
 @credentials_bp.route('/list', methods=['GET'])
 @login_required
 def list_credentials():
@@ -145,7 +159,7 @@ def create_credential():
     try:
         user_id = g.user_id
         data = request.get_json() or {}
-        name = (data.get('name') or '').strip()
+        name = _credential_name_from_payload(data)
         exchange_id = (data.get('exchange_id') or '').strip().lower()
 
         if not exchange_id:
@@ -305,5 +319,4 @@ def get_credential():
         logger.error(f"get_credential failed: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
-
 

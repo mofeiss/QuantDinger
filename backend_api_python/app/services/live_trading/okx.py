@@ -360,6 +360,19 @@ class OkxClient(BaseRestClient):
                 error_code = ""
                 if isinstance(data, dict):
                     error_code = str(data.get("code") or "")
+                if error_code == "50101" or "current environment" in error_msg.lower():
+                    mode = "simulated/paper" if self.simulated_trading else "live"
+                    expected = (
+                        "OKX simulated-trading API key and x-simulated-trading: 1 header"
+                        if self.simulated_trading
+                        else "OKX live API key without the simulated-trading header"
+                    )
+                    raise LiveTradingError(
+                        f"OKX API key environment mismatch (HTTP {code}, code {error_code}): {error_msg}\n"
+                        f"Current mode: {mode}. Expected: {expected}.\n"
+                        "If this key was created under OKX Demo Trading, enable demo/testnet trading for this credential. "
+                        "If this is a live OKX key, disable demo/testnet trading."
+                    )
                 if error_code == "50120" or "permission" in error_msg.lower():
                     raise LiveTradingError(
                         f"OKX API permission error (HTTP {code}, code {error_code}): {error_msg}\n"
@@ -879,5 +892,4 @@ class OkxClient(BaseRestClient):
             if time.time() >= end_ts:
                 return {"filled": filled, "avg_price": avg_price, "fee": 0.0, "fee_ccy": "", "state": state, "order": last_order, "fills": last_fills}
             time.sleep(float(poll_interval_sec or 0.5))
-
 
