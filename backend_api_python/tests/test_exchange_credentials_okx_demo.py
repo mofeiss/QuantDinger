@@ -1,7 +1,9 @@
 import json
 
 from app.routes.credentials import _credential_name_from_payload
-from app.services.live_trading.factory import create_client
+from app.services import exchange_execution
+from app.services.live_trading.factory import create_client, exchange_demo_mode_enabled
+from app.services.live_trading.base import RetryableLiveTradingError
 from app.services.live_trading.okx import OkxClient
 
 
@@ -55,6 +57,60 @@ def test_okx_factory_enables_simulated_trading_from_credential_flag():
     assert client.simulated_trading is True
 
 
+def test_resolve_exchange_config_keeps_demo_flag_from_credential_when_strategy_overlay_false(monkeypatch):
+    def fake_load_credential_config(credential_id, user_id=1):
+        assert credential_id == 7
+        assert user_id == 1
+        return {
+            "exchange_id": "okx",
+            "api_key": "api-key",
+            "secret_key": "secret-key",
+            "passphrase": "passphrase",
+            "enable_demo_trading": True,
+        }
+
+    monkeypatch.setattr(exchange_execution, "_load_credential_config", fake_load_credential_config)
+
+    resolved = exchange_execution.resolve_exchange_config(
+        {
+            "credential_id": 7,
+            "exchange_id": "okx",
+            # Frontend strategy forms may carry default false values. A referenced
+            # credential's environment must remain authoritative for live execution.
+            "enable_demo_trading": False,
+        },
+        user_id=1,
+    )
+
+    assert resolved["enable_demo_trading"] is True
+
+
+def test_resolve_exchange_config_keeps_demo_environment_alias_from_credential(monkeypatch):
+    def fake_load_credential_config(credential_id, user_id=1):
+        return {
+            "exchange_id": "okx",
+            "api_key": "api-key",
+            "secret_key": "secret-key",
+            "passphrase": "passphrase",
+            "environment": "demo",
+        }
+
+    monkeypatch.setattr(exchange_execution, "_load_credential_config", fake_load_credential_config)
+
+    resolved = exchange_execution.resolve_exchange_config(
+        {
+            "credential_id": 7,
+            "exchange_id": "okx",
+            "environment": "live",
+            "enable_demo_trading": False,
+        },
+        user_id=1,
+    )
+
+    assert resolved["environment"] == "demo"
+    assert exchange_demo_mode_enabled(resolved) is True
+
+
 def test_okx_environment_mismatch_message_points_to_demo_toggle(monkeypatch):
     client = OkxClient(
         api_key="api-key",
@@ -81,3 +137,43 @@ def test_okx_environment_mismatch_message_points_to_demo_toggle(monkeypatch):
 
     assert "environment mismatch" in message
     assert "enable demo/testnet trading" in message
+
+
+def test_okx_system_busy_order_response_is_retryable(monkeypatch):
+    client = OkxClient(
+        api_key="api-key",
+        secret_key="secret-key",
+        passphrase="passphrase",
+        simulated_trading=True,
+    )
+
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *args, **kwargs: (
+            200,
+            {
+                "code": "1",
+                "msg": "All operations failed",
+                "data": [
+                    {
+                        "ordId": "",
+                        "sCode": "50013",
+                        "sMsg": "Systems are busy. Please try again later.",
+                    }
+                ],
+            },
+            "",
+        ),
+    )
+
+    try:
+        client._signed_request("POST", "/api/v5/trade/order", json_body={"instId": "BTC-USDT-SWAP"})
+    except RetryableLiveTradingError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("Expected OKX 50013 response to be retryable")
+
+    assert "retryable" in message
+    assert "50013" in message
+    assert "simulated" in message

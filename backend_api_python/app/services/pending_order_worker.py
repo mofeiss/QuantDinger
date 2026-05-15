@@ -19,7 +19,7 @@ from app.services.exchange_execution import load_strategy_configs, resolve_excha
 from app.services.live_trading.execution import place_order_from_signal
 from app.services.live_trading.factory import create_client
 from app.services.live_trading.records import apply_fill_to_local_position, record_trade
-from app.services.live_trading.base import LiveTradingError
+from app.services.live_trading.base import LiveTradingError, RetryableLiveTradingError
 from app.services.live_trading.binance import BinanceFuturesClient
 from app.services.live_trading.binance_spot import BinanceSpotClient
 from app.services.live_trading.okx import OkxClient
@@ -1467,6 +1467,42 @@ class PendingOrderWorker:
                 return 0.0, ""
             return 0.0, ""
 
+        def _retryable_attempts() -> int:
+            try:
+                n = int(os.getenv("LIVE_ORDER_RETRY_ATTEMPTS", "3"))
+            except Exception:
+                n = 3
+            return max(1, min(n, 5))
+
+        def _retryable_backoff_sec(attempt_index: int) -> float:
+            try:
+                base = float(os.getenv("LIVE_ORDER_RETRY_BACKOFF_SEC", "1.0"))
+            except Exception:
+                base = 1.0
+            if base < 0:
+                base = 0.0
+            return min(base * max(1, int(attempt_index)), 5.0)
+
+        def _run_retryable_order_call(phase: str, fn):
+            max_attempts = _retryable_attempts()
+            last_err: Optional[RetryableLiveTradingError] = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return fn()
+                except RetryableLiveTradingError as e:
+                    last_err = e
+                    phases[f"{phase}_retry_{attempt}"] = str(e)
+                    if attempt >= max_attempts:
+                        break
+                    wait_sec = _retryable_backoff_sec(attempt)
+                    logger.warning(
+                        f"live {phase} retryable error: pending_id={order_id}, strategy_id={strategy_id}, "
+                        f"attempt={attempt}/{max_attempts}, sleep={wait_sec}, err={e}"
+                    )
+                    if wait_sec > 0:
+                        time.sleep(wait_sec)
+            raise last_err or RetryableLiveTradingError(f"{phase} retryable order call failed")
+
         def _current_avg() -> float:
             return float(total_quote / total_base) if total_base > 0 else 0.0
 
@@ -1608,16 +1644,19 @@ class PendingOrderWorker:
                         except Exception:
                             # If leverage set fails, let place_order raise and mark failed.
                             pass
-                    res1 = client.place_limit_order(
-                        market_type=market_type,
-                        symbol=str(symbol),
-                        side=side,
-                        size=remaining,
-                        price=limit_price,
-                        pos_side=pos_side,
-                        td_mode=td_mode,
-                        reduce_only=reduce_only,
-                        client_order_id=limit_client_oid,
+                    res1 = _run_retryable_order_call(
+                        "limit",
+                        lambda: client.place_limit_order(
+                            market_type=market_type,
+                            symbol=str(symbol),
+                            side=side,
+                            size=remaining,
+                            price=limit_price,
+                            pos_side=pos_side,
+                            td_mode=td_mode,
+                            reduce_only=reduce_only,
+                            client_order_id=limit_client_oid,
+                        ),
                     )
                 elif isinstance(client, BitgetMixClient):
                     product_type = str(exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES")
@@ -1957,15 +1996,18 @@ class PendingOrderWorker:
                             client.set_leverage(inst_id=inst_id, lever=leverage, mgn_mode=td_mode, pos_side=pos_side)
                         except Exception:
                             pass
-                    res2 = client.place_market_order(
-                        symbol=str(symbol),
-                        side=side,
-                        size=remaining,
-                        market_type=market_type,
-                        pos_side=pos_side,
-                        td_mode=td_mode,
-                        reduce_only=reduce_only,
-                        client_order_id=market_client_oid,
+                    res2 = _run_retryable_order_call(
+                        "market",
+                        lambda: client.place_market_order(
+                            symbol=str(symbol),
+                            side=side,
+                            size=remaining,
+                            market_type=market_type,
+                            pos_side=pos_side,
+                            td_mode=td_mode,
+                            reduce_only=reduce_only,
+                            client_order_id=market_client_oid,
+                        ),
                     )
                 elif isinstance(client, BitgetMixClient):
                     product_type = str(exchange_config.get("product_type") or exchange_config.get("productType") or "USDT-FUTURES")
@@ -2849,4 +2891,3 @@ class PendingOrderWorker:
             )
             db.commit()
             cur.close()
-

@@ -92,6 +92,12 @@ class LiveTradingError(Exception):
     pass
 
 
+class RetryableLiveTradingError(LiveTradingError):
+    """Transient exchange-side error; caller may retry the same request."""
+
+    pass
+
+
 class BaseRestClient:
     def __init__(self, base_url: str, timeout_sec: float = 15.0):
         self.base_url = (base_url or "").rstrip("/")
@@ -163,5 +169,4 @@ class BaseRestClient:
     def get_fee_rate(self, symbol: str, market_type: str = "swap") -> Optional[Dict[str, float]]:
         """Query account fee rate from exchange. Returns {"maker": 0.0002, "taker": 0.0005} or None."""
         return None
-
 

@@ -16,7 +16,7 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
-from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError
+from app.services.live_trading.base import BaseRestClient, LiveOrderResult, LiveTradingError, RetryableLiveTradingError
 
 logger = logging.getLogger(__name__)
 from app.services.live_trading.symbols import to_okx_swap_inst_id, to_okx_spot_inst_id
@@ -396,6 +396,14 @@ class OkxClient(BaseRestClient):
                     raise LiveTradingError(
                         f"OKX insufficient margin error (code {s_code}): {s_msg}\n"
                         f"Solution: Please ensure you have sufficient USDT margin in your account to place this order."
+                    )
+                # Error code 50013: transient OKX matching/risk engine busy.
+                # Auth already succeeded; retrying the same order shortly is safer
+                # than permanently failing the pending order on the first response.
+                if s_code == "50013" or "systems are busy" in s_msg.lower() or "system is busy" in s_msg.lower():
+                    mode = "simulated/paper" if self.simulated_trading else "live"
+                    raise RetryableLiveTradingError(
+                        f"OKX system busy (retryable, mode={mode}, code {s_code}): {s_msg or error_msg}"
                     )
                 # Error code 50120: Permission error
                 if s_code == "50120" or error_code == "50120" or "permission" in str(error_msg).lower():
@@ -892,4 +900,3 @@ class OkxClient(BaseRestClient):
             if time.time() >= end_ts:
                 return {"filled": filled, "avg_price": avg_price, "fee": 0.0, "fee_ccy": "", "state": state, "order": last_order, "fills": last_fills}
             time.sleep(float(poll_interval_sec or 0.5))
-

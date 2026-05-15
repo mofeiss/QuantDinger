@@ -20,6 +20,52 @@ from app.utils.credential_crypto import decrypt_credential_blob
 logger = get_logger(__name__)
 
 
+_DEMO_MODE_KEYS = {
+    "enable_demo_trading",
+    "enableDemoTrading",
+    "simulated_trading",
+    "simulatedTrading",
+    "use_testnet",
+    "is_testnet",
+    "isTestnet",
+    "sandbox",
+    "paper_trading",
+    "paperTrading",
+}
+_DEMO_ENV_KEYS = {"network", "environment", "env"}
+_DEMO_OVERLAY_KEYS = _DEMO_MODE_KEYS | _DEMO_ENV_KEYS
+
+
+def _demo_value_enabled(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return int(value) == 1
+    if isinstance(value, str):
+        return value.strip().lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+            "testnet",
+            "sandbox",
+            "demo",
+            "paper",
+            "simulate",
+            "simulation",
+        )
+    return False
+
+
+def _config_demo_enabled(cfg: Dict[str, Any]) -> bool:
+    if not isinstance(cfg, dict):
+        return False
+    for key in _DEMO_ENV_KEYS:
+        if _demo_value_enabled(cfg.get(key)):
+            return True
+    return any(_demo_value_enabled(cfg.get(key)) for key in _DEMO_MODE_KEYS)
+
+
 def _safe_json_loads(value: Any, default: Any) -> Any:
     if value is None:
         return default
@@ -180,11 +226,13 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
 
     merged: Dict[str, Any] = {}
     credential_id = exchange_config.get("credential_id") or exchange_config.get("credentials_id")
+    loaded_credential = False
     try:
         if credential_id:
             base = _load_credential_config(int(credential_id), user_id=user_id)
             if isinstance(base, dict):
                 merged.update(base)
+                loaded_credential = bool(base)
     except Exception as e:
         logger.warning(f"Failed to load credential_id={credential_id}: {e}")
 
@@ -194,8 +242,13 @@ def resolve_exchange_config(exchange_config: Dict[str, Any], user_id: int = 1) -
             continue
         if isinstance(v, str) and not v.strip():
             continue
+        # When a strategy references a saved credential, the credential's
+        # execution environment (live vs demo/testnet/paper) is authoritative.
+        # Strategy forms often carry default false values; allowing them to
+        # override a demo credential can silently route a demo key as live.
+        if loaded_credential and k in _DEMO_OVERLAY_KEYS:
+            if _config_demo_enabled(merged) and not _demo_value_enabled(v):
+                continue
         merged[k] = v
 
     return merged
-
-
